@@ -1,346 +1,408 @@
-import pandas as pd
-from datetime import datetime
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from typing import List, Dict, Optional, Union
 import os
+import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
+from io import BytesIO
+import base64
+from datetime import datetime
+import json
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(title="Expense Tracker API", description="API for tracking personal expenses")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
+# Pydantic models for request/response validation
+class TransactionBase(BaseModel):
+    date: str
+    description: str
+    name: str
+    amount: float
+    type: str
+    category: str
+    account: str
+    to_account: Optional[str] = "None"
+    paid_by: Optional[str] = "Self"
+    status: Optional[str] = "Pending"
+
+class TransactionCreate(TransactionBase):
+    pass
+
+class TransactionUpdate(BaseModel):
+    status: str
+
+class TransactionResponse(TransactionBase):
+    index: int
+
+class SpendingResponse(BaseModel):
+    category: str
+    amount: float
+
+class ChartResponse(BaseModel):
+    chart: str  # Base64 encoded image
+
+class ErrorResponse(BaseModel):
+    success: bool = False
+    error: str
+
+class SuccessResponse(BaseModel):
+    success: bool = True
+    message: str
+
+class BalanceResponse(BaseModel):
+    success: bool = True
+    balances: Dict[str, float]
+
+class SpendingCategoryResponse(BaseModel):
+    success: bool = True
+    spending: Dict[str, float]
+
+class ChartResponseModel(BaseModel):
+    success: bool = True
+    chart: str  # Base64 encoded string
+
+class TransactionListResponse(BaseModel):
+    success: bool = True
+    transactions: List[dict]
+
 
 class ExpenseTracker:
-    def __init__(self, file_path=None):
+    def __init__(self):
+        self.transactions = []
         self.columns = [
-            'Date', 'Description', 'Name', 'Amount', 'Transaction Type',
-            'Category', 'Account Name', 'To Account', 'Paid By', 'Status'
+            'date', 'description', 'name', 'amount', 'type', 
+            'category', 'account', 'toaccount', 'paidby', 'status'
         ]
-        
-        # Initialize DataFrame
-        if file_path and os.path.exists(file_path):
-            self.df = pd.read_csv(file_path)
-        else:
-            self.df = pd.DataFrame(columns=self.columns)
-        
-        # Convert Date column to datetime if it exists and has data
-        if 'Date' in self.df.columns and not self.df.empty:
-            self.df['Date'] = pd.to_datetime(self.df['Date'], format='%d-%m-%Y', errors='coerce')
     
-    def add_transaction(self, date, description, name, amount, transaction_type, category, account_name, to_account="None", paid_by="Self", status="Pending"):
-        """Add a new transaction to the record"""
-        try:
-            # Convert date string to datetime
-            if isinstance(date, str):
-                date = datetime.strptime(date, '%d-%m-%Y')
-            
-            new_transaction = pd.DataFrame({
-                'Date': [date],
-                'Description': [description],
-                'Name': [name],
-                'Amount': [float(amount)],
-                'Transaction Type': [transaction_type],
-                'Category': [category],
-                'Account Name': [account_name],
-                'To Account': [to_account],
-                'Paid By': [paid_by],
-                'Status': [status]
-            })
-            
-            self.df = pd.concat([self.df, new_transaction], ignore_index=True)
-            print(f"Transaction added: {description} for {amount}")
-            return True
-        except Exception as e:
-            print(f"Error adding transaction: {str(e)}")
-            return False
-
-    def update_transaction_status(self, index, new_status):
-        """Update the status of a transaction"""
-        try:
-            if 0 <= index < len(self.df):
-                self.df.at[index, 'Status'] = new_status
-                print(f"Transaction status updated to {new_status}")
-                return True
-            else:
-                print("Invalid transaction index")
-                return False
-        except Exception as e:
-            print(f"Error updating transaction: {str(e)}")
-            return False
-
+    def add_transaction(self, date, description, name, amount, transaction_type, 
+                       category, account_name, to_account="None", paid_by="Self", status="Pending"):
+        transaction = {
+            'date': date,
+            'description': description,
+            'name': name,
+            'amount': amount,
+            'type': transaction_type,
+            'category': category,
+            'account': account_name,
+            'toaccount': to_account,
+            'paidby': paid_by,
+            'status': status
+        }
+        self.transactions.append(transaction)
+        return len(self.transactions) - 1  # Return index of new transaction
+    
     def delete_transaction(self, index):
-        """Delete a transaction by index"""
-        try:
-            if 0 <= index < len(self.df):
-                description = self.df.iloc[index]['Description']
-                self.df = self.df.drop(index).reset_index(drop=True)
-                print(f"Transaction deleted: {description}")
-                return True
-            else:
-                print("Invalid transaction index")
-                return False
-        except Exception as e:
-            print(f"Error deleting transaction: {str(e)}")
-            return False
-
-    def get_account_balance(self, account_name):
-        """Calculate the current balance for a specific account"""
-        account_transactions = self.df[self.df['Account Name'] == account_name]
-        
-        # Filter for transactions that affect the balance
-        credits = account_transactions[account_transactions['Transaction Type'].isin(['Credit', 'Received'])]['Amount'].sum()
-        debits = account_transactions[account_transactions['Transaction Type'].isin(['Debit', 'Paid'])]['Amount'].sum()
-        
-        # Handle transfers
-        transfers_out = account_transactions[
-            (account_transactions['Transaction Type'] == 'Transfered') & 
-            (account_transactions['Account Name'] == account_name)
-        ]['Amount'].sum()
-        
-        transfers_in = self.df[
-            (self.df['Transaction Type'] == 'Transfered') & 
-            (self.df['To Account'] == account_name)
-        ]['Amount'].sum()
-        
-        balance = credits - debits - transfers_out + transfers_in
-        return balance
-
+        if 0 <= index < len(self.transactions):
+            del self.transactions[index]
+            return True
+        return False
+    
+    def update_transaction_status(self, index, new_status):
+        if 0 <= index < len(self.transactions):
+            self.transactions[index]['Status'] = new_status
+            return True
+        return False
+    
     def get_all_account_balances(self):
-        """Get balances for all accounts"""
-        accounts = self.df['Account Name'].unique()
         balances = {}
         
-        for account in accounts:
-            balances[account] = self.get_account_balance(account)
+        for transaction in self.transactions:
+            account = transaction['account']
+            amount = float(transaction['amount'])
+            transaction_type = transaction['type'].lower()
+            to_account = transaction['toaccount']
+            
+            # Initialize accounts if they don't exist
+            if account not in balances:
+                balances[account] = 0
+            if to_account != "None" and to_account not in balances:
+                balances[to_account] = 0
+            
+            # Update balances based on transaction type
+            if transaction_type == "credit":
+                balances[account] += amount
+            elif transaction_type == "debit":
+                balances[account] -= amount
+            elif transaction_type == "transfered":
+                balances[account] -= amount
+                if to_account != "None":
+                    balances[to_account] += amount
         
-        return balances
-
+        # Clean up any NaN values
+        cleaned_balances = {}
+        for account, balance in balances.items():
+            if pd.isna(account) or pd.isna(balance):
+                # Skip NaN keys or values
+                continue
+            cleaned_balances[str(account)] = float(balance) if not pd.isna(balance) else 0.0
+        
+        return cleaned_balances
+    
     def get_spending_by_category(self, start_date=None, end_date=None):
-        """Calculate spending by category within date range"""
-        df_filtered = self.df.copy()
+        # Convert to pandas DataFrame for easier filtering and grouping
+        df = pd.DataFrame(self.transactions)
         
-        if start_date:
-            if isinstance(start_date, str):
-                start_date = datetime.strptime(start_date, '%d-%m-%Y')
-            df_filtered = df_filtered[df_filtered['Date'] >= start_date]
+        if len(df) == 0:
+            return {}
         
-        if end_date:
-            if isinstance(end_date, str):
-                end_date = datetime.strptime(end_date, '%d-%m-%Y')
-            df_filtered = df_filtered[df_filtered['Date'] <= end_date]
-        
-        # Only consider debit transactions for spending
-        spending_df = df_filtered[df_filtered['Transaction Type'].isin(['Debit', 'Paid'])]
-        
-        return spending_df.groupby('Category')['Amount'].sum().sort_values(ascending=False)
-
-    def get_transactions_by_date_range(self, start_date=None, end_date=None):
-        """Get transactions within a specific date range"""
-        df_filtered = self.df.copy()
-        
-        if start_date:
-            if isinstance(start_date, str):
-                start_date = datetime.strptime(start_date, '%d-%m-%Y')
-            df_filtered = df_filtered[df_filtered['Date'] >= start_date]
-        
-        if end_date:
-            if isinstance(end_date, str):
-                end_date = datetime.strptime(end_date, '%d-%m-%Y')
-            df_filtered = df_filtered[df_filtered['Date'] <= end_date]
-        
-        return df_filtered
-
-    def save_to_csv(self, file_path):
-        """Save the transaction data to a CSV file"""
-        try:
-            # Convert datetime to string format before saving
-            df_to_save = self.df.copy()
-            if 'Date' in df_to_save.columns and not df_to_save.empty:
-                df_to_save['Date'] = df_to_save['Date'].dt.strftime('%d-%m-%Y')
-            
-            df_to_save.to_csv(file_path, index=False)
-            print(f"Data saved to {file_path}")
-            return True
-        except Exception as e:
-            print(f"Error saving data: {str(e)}")
-            return False
-
-    def load_from_csv(self, file_path):
-        """Load transaction data from a CSV file"""
-        try:
-            if os.path.exists(file_path):
-                self.df = pd.read_csv(file_path)
-                
-                # Convert Date column to datetime
-                if 'Date' in self.df.columns and not self.df.empty:
-                    self.df['Date'] = pd.to_datetime(self.df['Date'], format='%d-%m-%Y', errors='coerce')
-                
-                print(f"Data loaded from {file_path}")
-                return True
-            else:
-                print(f"File not found: {file_path}")
-                return False
-        except Exception as e:
-            print(f"Error loading data: {str(e)}")
-            return False
-
-    def display_transactions(self, n=10):
-        """Display the most recent transactions"""
-        if self.df.empty:
-            print("No transactions found.")
-            return
-        
-        # Sort by date (newest first) and display the most recent n transactions
-        sorted_df = self.df.sort_values(by='Date', ascending=False).head(n)
-        
-        # Format for display
-        display_df = sorted_df.copy()
-        display_df['Date'] = display_df['Date'].dt.strftime('%d-%m-%Y')
-        
-        print("\nRecent Transactions:")
-        for idx, row in display_df.iterrows():
-            print(f"{idx}. [{row['Date']}] {row['Description']} - {row['Amount']} ({row['Transaction Type']}) - {row['Account Name']} - {row['Status']}")
-
-    def plot_spending_by_category(self, start_date=None, end_date=None):
-        """Plot spending by category in a pie chart"""
-        spending = self.get_spending_by_category(start_date, end_date)
-        
-        if spending.empty:
-            print("No spending data available for the selected period.")
-            return
-        
-        plt.figure(figsize=(10, 7))
-        plt.pie(spending.values, labels=spending.index, autopct='%1.1f%%', startangle=140)
-        plt.axis('equal')
-        
-        date_range = ""
+        # Filter by date if provided
         if start_date and end_date:
-            if isinstance(start_date, str):
-                start_date = datetime.strptime(start_date, '%d-%m-%Y').strftime('%d-%m-%Y')
-            else:
-                start_date = start_date.strftime('%d-%m-%Y')
-                
-            if isinstance(end_date, str):
-                end_date = datetime.strptime(end_date, '%d-%m-%Y').strftime('%d-%m-%Y')
-            else:
-                end_date = end_date.strftime('%d-%m-%Y')
-                
-            date_range = f" ({start_date} to {end_date})"
+            df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
+            start = pd.to_datetime(start_date, format='%d-%m-%Y')
+            end = pd.to_datetime(end_date, format='%d-%m-%Y')
+            df = df[(df['date'] >= start) & (df['date'] <= end)]
         
-        plt.title(f'Spending by Category{date_range}')
-        plt.show()
-
+        # Filter only debit transactions (expenses)
+        debit_df = df[df['type'].str.lower() == 'debit']
+        
+        if len(debit_df) == 0:
+            return {}
+        
+        # Group by category and sum amounts
+        category_spending = debit_df.groupby('category')['amount'].sum().to_dict()
+        
+        return category_spending
+    
+    def plot_spending_by_category(self, start_date=None, end_date=None):
+        category_spending = self.get_spending_by_category(start_date, end_date)
+        
+        if not category_spending:
+            return None
+        
+        plt.figure(figsize=(10, 6))
+        plt.bar(category_spending.keys(), category_spending.values())
+        plt.xlabel('Category')
+        plt.ylabel('Amount Spent')
+        plt.title('Spending by Category')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        
+        # Save plot to a bytes buffer
+        buffer = BytesIO()
+        plt.savefig(buffer, format='png')
+        buffer.seek(0)
+        plt.close()
+        
+        # Convert to base64 for easy transmission
+        img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        return img_str
+    
     def plot_monthly_spending(self):
-        """Plot monthly spending trend"""
-        if self.df.empty:
-            print("No transaction data available.")
-            return
-            
-        # Create a month column
-        df_with_month = self.df.copy()
-        df_with_month['Month'] = df_with_month['Date'].dt.to_period('M')
+        df = pd.DataFrame(self.transactions)
         
-        # Filter for debit transactions
-        spending_df = df_with_month[df_with_month['Transaction Type'].isin(['Debit', 'Paid'])]
+        if len(df) == 0:
+            return None
         
-        # Group by month
-        monthly_spending = spending_df.groupby('Month')['Amount'].sum()
+        # Convert date strings to datetime objects
+        df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
         
-        # Convert period index to datetime for proper plotting
-        months = [pd.to_datetime(str(period)) for period in monthly_spending.index]
+        # Filter only debit transactions
+        debit_df = df[df['Type'].str.lower() == 'debit']
+        
+        if len(debit_df) == 0:
+            return None
+        
+        # Extract month and year
+        debit_df['Month'] = debit_df['date'].dt.strftime('%Y-%m')
+        
+        # Group by month and sum
+        monthly_spending = debit_df.groupby('Month')['Amount'].sum()
         
         plt.figure(figsize=(12, 6))
-        plt.bar(months, monthly_spending.values)
+        monthly_spending.plot(kind='bar')
         plt.xlabel('Month')
-        plt.ylabel('Amount')
+        plt.ylabel('Amount Spent')
         plt.title('Monthly Spending')
         plt.xticks(rotation=45)
         plt.tight_layout()
-        plt.show()
+        
+        # Save plot to a bytes buffer
+        buffer = BytesIO()
+        plt.savefig(buffer, format='png')
+        buffer.seek(0)
+        plt.close()
+        
+        # Convert to base64 for easy transmission
+        img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        return img_str
+    
+    def load_from_csv(self, file_path):
+        try:
+            df = pd.read_csv(file_path)
+            self.transactions = df.to_dict('records')
+            return True
+        except Exception as e:
+            print(f"Error loading data: {e}")
+            return False
+    
+    def save_to_csv(self, file_path):
+        try:
+            df = pd.DataFrame(self.transactions)
+            df.to_csv(file_path, index=False)
+            return True
+        except Exception as e:
+            print(f"Error saving data: {e}")
+            return False
 
 
-def main():
-    print("\n===== Personal Expense Tracker =====\n")
-    
-    # Initialize tracker
-    tracker = ExpenseTracker()
-    file_path = 'expenses.csv'
-    
-    # Try to load existing data
-    if os.path.exists(file_path):
-        tracker.load_from_csv(file_path)
-    
-    
-    while True:
-        print("\n--- Menu ---")
-        print("1. Add new transaction")
-        print("2. View recent transactions")
-        print("3. View account balances")
-        print("4. View spending by category")
-        print("5. Update transaction status")
-        print("6. Delete transaction")
-        print("7. Plot spending by category")
-        print("8. Plot monthly spending")
-        print("9. Save and exit")
+# Initialize tracker
+tracker = ExpenseTracker()
+file_path = 'expenses.csv'
+
+# Load existing data if file exists
+if os.path.exists(file_path):
+    tracker.load_from_csv(file_path)
+
+
+# API Routes
+
+@app.get("/api/transactions", response_model=TransactionListResponse, summary="Get recent transactions")
+async def get_transactions(limit: int = Query(10, description="Number of transactions to return")):
+    """
+    Get recent transactions with optional limit parameter.
+    """
+    try:
+        transactions = tracker.transactions[-limit:] if limit < len(tracker.transactions) else tracker.transactions
+        return {"success": True, "transactions": transactions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/transactions", response_model=SuccessResponse, summary="Add a new transaction")
+async def add_transaction(transaction: TransactionCreate):
+    """
+    Add a new transaction with the provided details.
+    """
+    try:
+        index = tracker.add_transaction(
+            transaction.date,
+            transaction.description,
+            transaction.name,
+            transaction.amount,
+            transaction.type,
+            transaction.category,
+            transaction.account,
+            transaction.to_account,
+            transaction.paid_by,
+            transaction.status
+        )
         
-        choice = input("\nEnter your choice (1-9): ")
+        # Save to CSV
+        tracker.save_to_csv(file_path)
         
-        if choice == '1':
-            date = input("Date (DD-MM-YYYY): ")
-            description = input("Description: ")
-            name = input("Name: ")
-            amount = float(input("Amount: "))
-            
-            print("\nTransaction Types: Credit, Debit, Transfered")
-            transaction_type = input("Transaction Type: ")
-            
-            category = input("Category: ")
-            account_name = input("Account Name: ")
-            
-            to_account = "None"
-            if transaction_type.lower() == "transfered":
-                to_account = input("To Account: ")
-                
-            paid_by = input("Paid By (default: Self): ") or "Self"
-            status = input("Status (default: Pending): ") or "Pending"
-            
-            tracker.add_transaction(date, description, name, amount, transaction_type, category, account_name, to_account, paid_by, status)
-        
-        elif choice == '2':
-            n = int(input("How many recent transactions to view? (default: 10): ") or 10)
-            tracker.display_transactions(n)
-        
-        elif choice == '3':
-            balances = tracker.get_all_account_balances()
-            print("\nAccount Balances:")
-            for account, balance in balances.items():
-                print(f"{account}: {balance}")
-        
-        elif choice == '4':
-            start_date = input("Start Date (DD-MM-YYYY, optional): ") or None
-            end_date = input("End Date (DD-MM-YYYY, optional): ") or None
-            spending = tracker.get_spending_by_category(start_date, end_date)
-            print("\nSpending by Category:")
-            print(spending)
-        
-        elif choice == '5':
-            index = int(input("Enter the transaction index to update: "))
-            new_status = input("Enter the new status: ")
-            tracker.update_transaction_status(index, new_status)
-        
-        elif choice == '6':
-            index = int(input("Enter the transaction index to delete: "))
-            tracker.delete_transaction(index)
-        
-        elif choice == '7':
-            start_date = input("Start Date (DD-MM-YYYY, optional): ") or None
-            end_date = input("End Date (DD-MM-YYYY, optional): ") or None
-            tracker.plot_spending_by_category(start_date, end_date)
-        
-        elif choice == '8':
-            tracker.plot_monthly_spending()
-        
-        elif choice == '9':
-            # Save the data to a CSV file before exiting
+        return {"success": True, "message": f"Transaction added with index {index}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/transactions/{index}", response_model=SuccessResponse, summary="Delete a transaction")
+async def delete_transaction(index: int):
+    """
+    Delete a transaction by its index.
+    """
+    try:
+        if tracker.delete_transaction(index):
             tracker.save_to_csv(file_path)
-            print("Goodbye!")
-            break
-        
+            return {"success": True, "message": "Transaction deleted"}
         else:
-            print("Invalid choice. Please try again.")
+            raise HTTPException(status_code=404, detail="Transaction not found")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
 
-main()
+
+@app.put("/api/transactions/{index}/status", response_model=SuccessResponse, summary="Update transaction status")
+async def update_status(index: int, update_data: TransactionUpdate):
+    """
+    Update the status of a transaction.
+    """
+    try:
+        if tracker.update_transaction_status(index, update_data.status):
+            tracker.save_to_csv(file_path)
+            return {"success": True, "message": "Status updated"}
+        else:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/balances", response_model=BalanceResponse, summary="Get account balances")
+async def get_balances():
+    """
+    Get balances for all accounts.
+    """
+    try:
+        balances = tracker.get_all_account_balances()
+        return {"success": True, "balances": balances}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/spending/category", response_model=SpendingCategoryResponse, summary="Get spending by category")
+async def get_spending_by_category(
+    start_date: Optional[str] = Query(None, description="Start date in DD-MM-YYYY format"),
+    end_date: Optional[str] = Query(None, description="End date in DD-MM-YYYY format")
+):
+    """
+    Get spending breakdown by category with optional date filtering.
+    """
+    try:
+        spending = tracker.get_spending_by_category(start_date, end_date)
+        return {"success": True, "spending": spending}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/charts/category", response_model=ChartResponseModel, summary="Get category spending chart")
+async def get_category_chart(
+    start_date: Optional[str] = Query(None, description="Start date in DD-MM-YYYY format"),
+    end_date: Optional[str] = Query(None, description="End date in DD-MM-YYYY format")
+):
+    """
+    Get a chart showing spending by category. Returns base64 encoded PNG image.
+    """
+    try:
+        img_str = tracker.plot_spending_by_category(start_date, end_date)
+        if img_str:
+            return {"success": True, "chart": img_str}
+        else:
+            raise HTTPException(status_code=404, detail="No data available for chart")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/charts/monthly", response_model=ChartResponseModel, summary="Get monthly spending chart")
+async def get_monthly_chart():
+    """
+    Get a chart showing monthly spending. Returns base64 encoded PNG image.
+    """
+    try:
+        img_str = tracker.plot_monthly_spending()
+        if img_str:
+            return {"success": True, "chart": img_str}
+        else:
+            raise HTTPException(status_code=404, detail="No data available for chart")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
