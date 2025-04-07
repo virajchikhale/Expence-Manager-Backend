@@ -1,0 +1,8 @@
+date,description,name,amount,type,category,account,toaccount,paidby,status
+2025-04-03,Salary,viraj,10000.0,Credit,Salary,,,Self,paid
+2025-04-03,breakfast,viraj,20000.0,Credit,Break-fast,HDFC,,Self,paid
+2025-04-03,breakfast,viraj,300.0,Credit,Salary,Cash,,Self,paid
+2025-04-03,Salary,viraj,10000.0,Transferred,Salary,HDFC,,Self,paid
+2025-04-04,breakfast,viraj,500.0,Debit,Break-fast,ICICI,None,Self,paid
+2025-04-04,Salary,viraj,300.0,Transferred,Salary,Cash,None,Self,paid
+15-03-2025,Grocery shopping,Supermarket,85.5,Debit,Groceries,Checking,None,Self,Completed
