@@ -133,7 +133,7 @@ class ExpenseTracker:
                 balances[account] += amount
             elif transaction_type == "debit":
                 balances[account] -= amount
-            elif transaction_type == "transfered":
+            elif transaction_type == "transferred":
                 balances[account] -= amount
                 if to_account != "None":
                     balances[to_account] += amount
