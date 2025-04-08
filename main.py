@@ -81,7 +81,7 @@ class ExpenseTracker:
         self.transactions = []
         self.columns = [
             'date', 'description', 'name', 'amount', 'type', 
-            'category', 'account', 'toaccount', 'paidby', 'status'
+            'category', 'account', 'to_account', 'paid_by', 'status'
         ]
     
     def add_transaction(self, date, description, name, amount, transaction_type, 
@@ -94,8 +94,8 @@ class ExpenseTracker:
             'type': transaction_type,
             'category': category,
             'account': account_name,
-            'toaccount': to_account,
-            'paidby': paid_by,
+            'to_account': to_account,
+            'paid_by': paid_by,
             'status': status
         }
         self.transactions.append(transaction)
@@ -120,7 +120,7 @@ class ExpenseTracker:
             account = transaction['account']
             amount = float(transaction['amount'])
             transaction_type = transaction['type'].lower()
-            to_account = transaction['toaccount']
+            to_account = transaction['to_account']
             
             # Initialize accounts if they don't exist
             if account not in balances:
