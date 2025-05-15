@@ -19,7 +19,7 @@ from bson import ObjectId
 from fastapi.middleware.cors import CORSMiddleware
 
 # Constants and configuration
-MONGO_URI = "mongodb+srv://viraj:VirajDB99@finance.kjg2zf7.mongodb.net/?retryWrites=true&w=majority&appName=Finance"
+MONGO_URI = "mongodb+srv://viraj:pass@finance.kjg2zf7.mongodb.net/?retryWrites=true&w=majority&appName=Finance"
 DB_NAME = "expense_tracker_db"
 SECRET_KEY = "YOUR_SECRET_KEY"  # Replace with a secure key in production
 ALGORITHM = "HS256"
