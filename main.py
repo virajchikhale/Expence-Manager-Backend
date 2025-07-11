@@ -19,9 +19,7 @@ from bson import ObjectId
 from fastapi.middleware.cors import CORSMiddleware
 
 # Constants and configuration
-from dotenv import load_dotenv
-load_dotenv()
-MONGO_URI = os.getenv("MONGO_URI")
+MONGO_URI = "mongodb+srv://viraj:pass@finance.kjg2zf7.mongodb.net/?retryWrites=true&w=majority&appName=Finance"
 DB_NAME = "expense_tracker_db"
 SECRET_KEY = "YOUR_SECRET_KEY"  # Replace with a secure key in production
 ALGORITHM = "HS256"
@@ -45,9 +43,6 @@ async def lifespan(app: FastAPI):
         
         # Create a unique index on email field
         await app.mongodb["users"].create_index("email", unique=True)
-       
-        # Create compound unique index on accounts (user_id, name)
-        await app.mongodb["accounts"].create_index([("user_id", 1), ("name", 1)], unique=True)
     except Exception as e:
         print(f"MongoDB connection error: {e}")
         raise
@@ -96,27 +91,11 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     email: Optional[str] = None
 
-# Account models
-class AccountBase(BaseModel):
-    name: str = Field(..., min_length=1)
-    type: str = Field(..., description="Type of account, e.g., 'personal' or 'friend'")
-
-class AccountCreate(AccountBase):
-    initial_balance: float = 0.0
-
-class AccountResponse(AccountBase):
-    id: str
-    balance: float
-
-class AccountListResponse(BaseModel):
-    success: bool = True
-    accounts: List[AccountResponse]
-
 # Transaction models
 class TransactionBase(BaseModel):
     date: str
     description: str
-    place: str  # changed from 'name' to 'place'
+    name: str
     amount: float
     type: str
     category: str
@@ -221,45 +200,15 @@ class ExpenseTracker:
     def __init__(self, app, user_id):
         self.app = app
         self.user_id = user_id
-        self.accounts_collection = app.mongodb["accounts"]
         self.transactions_collection = app.mongodb["transactions"]
     
-    async def create_account(self, name: str, type: str, initial_balance: float = 0.0):
-        account_doc = {
-            "user_id": self.user_id,
-            "name": name,
-            "type": type,
-            "created_at": datetime.utcnow()
-        }
-        try:
-            result = await self.accounts_collection.insert_one(account_doc)
-            account_id = str(result.inserted_id)
-            # If there's an initial balance, create an opening balance transaction
-            if initial_balance != 0:
-                trans_type = "credit" if initial_balance > 0 else "debit"
-                await self.add_transaction(
-                    date=datetime.utcnow().strftime('%d-%m-%Y'),
-                    description="Opening Balance",
-                    place="Opening Balance",  # changed from name to place
-                    amount=abs(initial_balance),
-                    transaction_type=trans_type,
-                    category="Initial Balance",
-                    account_name=name
-                )
-            return account_id
-        except Exception as e:
-            # Handle potential duplicate key error if account name already exists for user
-            if "duplicate key" in str(e):
-                raise ValueError(f"Account with name '{name}' already exists.")
-            raise
-
-    async def add_transaction(self, date, description, place, amount, transaction_type, 
+    async def add_transaction(self, date, description, name, amount, transaction_type, 
                        category, account_name, to_account="None", paid_by="Self", status="Pending"):
         transaction = {
             'user_id': self.user_id,
             'date': date,
             'description': description,
-            'place': place,  # changed from 'name' to 'place'
+            'name': name,
             'amount': amount,
             'type': transaction_type,
             'category': category,
@@ -269,15 +218,7 @@ class ExpenseTracker:
             'status': status,
             'created_at': datetime.utcnow()
         }
-        # Validate that accounts exist
-        from_account_exists = await self.accounts_collection.find_one({"user_id": self.user_id, "name": account_name})
-        if not from_account_exists:
-            raise ValueError(f"Account '{account_name}' does not exist.")
-
-        if to_account != "None":
-            to_account_exists = await self.accounts_collection.find_one({"user_id": self.user_id, "name": to_account})
-            if not to_account_exists:
-                raise ValueError(f"Account '{to_account}' does not exist.")
+        
         result = await self.transactions_collection.insert_one(transaction)
         return str(result.inserted_id)
     
@@ -323,15 +264,8 @@ class ExpenseTracker:
         return transactions
     
     async def get_all_account_balances(self):
-        # Get all accounts for the user
-        accounts_cursor = self.accounts_collection.find({"user_id": self.user_id})
-        accounts = await accounts_cursor.to_list(length=None)
-        
-        # Initialize balances for all existing accounts
-        balances = {account['name']: 0.0 for account in accounts}
-
-        # Get all transactions for the user
         transactions = await self.get_transactions()
+        balances = {}
         
         for transaction in transactions:
             account = transaction['account']
@@ -339,16 +273,19 @@ class ExpenseTracker:
             transaction_type = transaction['type'].lower()
             to_account = transaction['to_account']
             
+            # Initialize accounts if they don't exist
+            if account not in balances:
+                balances[account] = 0
+            if to_account != "None" and to_account not in balances:
+                balances[to_account] = 0
+            
             # Update balances based on transaction type
             if transaction_type == "credit":
                 balances[account] += amount
             elif transaction_type == "debit":
                 balances[account] -= amount
-            elif transaction_type == "debt_incurred":
-                # This is when a friend pays for you. You owe them.
-                balances[account] -= amount
             elif transaction_type == "transferred":
-                balances[account] -= amount # The account that money is leaving from
+                balances[account] -= amount
                 if to_account != "None":
                     balances[to_account] += amount
         
@@ -472,47 +409,6 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     
     return {"access_token": access_token, "token_type": "bearer"}
 
-# Account management endpoints
-@app.post("/api/accounts", response_model=SuccessResponse, status_code=status.HTTP_201_CREATED)
-async def create_account(
-    account: AccountCreate,
-    current_user: dict = Depends(get_current_user)
-):
-    """Create a new account for the authenticated user."""
-    try:
-        tracker = await get_tracker(current_user)
-        account_id = await tracker.create_account(account.name, account.type, account.initial_balance)
-        return {"success": True, "message": f"Account created with ID {account_id}"}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/accounts", response_model=AccountListResponse)
-async def list_accounts(current_user: dict = Depends(get_current_user)):
-    """List all accounts and their balances for the authenticated user."""
-    try:
-        tracker = await get_tracker(current_user)
-        balances = await tracker.get_all_account_balances()
-        
-        accounts_cursor = tracker.accounts_collection.find({"user_id": tracker.user_id})
-        accounts_list = []
-        async for acc in accounts_cursor:
-            accounts_list.append(AccountResponse(
-                id=str(acc["_id"]),
-                name=acc["name"],
-                type=acc["type"],
-                balance=balances.get(acc["name"], 0.0)
-            ))
-        return {"success": True, "accounts": accounts_list}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/api/accounts/{account_id}", response_model=SuccessResponse)
-async def delete_account(account_id: str, current_user: dict = Depends(get_current_user)):
-    # Note: In a real app, you might want to prevent deleting accounts with non-zero balances or transactions.
-    raise HTTPException(status_code=501, detail="Account deletion not yet implemented.")
-
 # User management endpoints
 @app.post("/api/users", response_model=User, status_code=status.HTTP_201_CREATED)
 async def create_user(user: UserCreate):
@@ -592,7 +488,7 @@ async def add_transaction(
         transaction_id = await tracker.add_transaction(
             transaction.date,
             transaction.description,
-            transaction.place,  # changed from transaction.name to transaction.place
+            transaction.name,
             transaction.amount,
             transaction.type,
             transaction.category,
@@ -602,8 +498,6 @@ async def add_transaction(
             transaction.status
         )
         return {"success": True, "message": f"Transaction added with ID {transaction_id}"}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
