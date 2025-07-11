@@ -7,7 +7,7 @@ from typing import List, Dict, Optional, Union
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import jwt
-from jwt.exceptions import PyJWTError
+from jwt import InvalidTokenError
 import matplotlib.pyplot as plt
 from io import BytesIO
 import base64
@@ -187,7 +187,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
-    except PyJWTError:
+    except InvalidTokenError:
         raise credentials_exception
     
     user = await get_user_by_email(app, email)
