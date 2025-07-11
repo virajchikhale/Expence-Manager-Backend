@@ -2,7 +2,13 @@ services:
   - type: web
     name: fastapi-app
     env: python
-    buildCommand: ""
+    buildCommand: |
+      curl https://sh.rustup.rs -sSf | sh -s -- -y
+      source $HOME/.cargo/env
+      export CARGO_HOME=$HOME/.cargo
+      export CARGO_TARGET_DIR=/tmp/target
+      pip install maturin
+      pip install .
     startCommand: ./start.sh
     runtime: python
     region: oregon
