@@ -17,6 +17,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.server_api import ServerApi
 from bson import ObjectId
 from fastapi.middleware.cors import CORSMiddleware
+import certifi
 
 # Constants and configuration
 
@@ -35,7 +36,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Connect to MongoDB
-    app.mongodb_client = AsyncIOMotorClient(MONGO_URI, server_api=ServerApi('1'))
+    app.mongodb_client = AsyncIOMotorClient(MONGO_URI, server_api=ServerApi('1'), tlsCAFile=certifi.where())
     app.mongodb = app.mongodb_client[DB_NAME]
     
     # Check connection
