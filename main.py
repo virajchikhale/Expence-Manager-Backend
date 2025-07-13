@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Dict, Optional, Union
 from passlib.context import CryptContext
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta # 'date' is imported
 import jwt
 from jwt.exceptions import PyJWTError
 import matplotlib.pyplot as plt
@@ -116,9 +116,10 @@ class AccountListResponse(BaseModel):
 
 # Transaction models
 class TransactionBase(BaseModel):
-    date: str
+    # --- CHANGE 1: Changed from str to date. FastAPI handles "YYYY-MM-DD" parsing.
+    date: date 
     description: str
-    place: str  # changed from 'name' to 'place'
+    place: str
     amount: float
     type: str
     category: str
@@ -142,18 +143,19 @@ class TransactionFilterPayload(BaseModel):
     searchTerm: Optional[str] = None
     dateFrom: Optional[date] = None
     dateTo: Optional[date] = None
-    type: Optional[str] = None
+    type: Optional[List[str]] = None  # Now a list
     categories: Optional[List[str]] = None
     accounts: Optional[List[str]] = None
     minAmount: Optional[float] = None
     maxAmount: Optional[float] = None
 
+# Response models (no changes needed here)
 class SpendingResponse(BaseModel):
     category: str
     amount: float
 
 class ChartResponse(BaseModel):
-    chart: str  # Base64 encoded image
+    chart: str
 
 class ErrorResponse(BaseModel):
     success: bool = False
@@ -173,7 +175,7 @@ class SpendingCategoryResponse(BaseModel):
 
 class ChartResponseModel(BaseModel):
     success: bool = True
-    chart: str  # Base64 encoded string
+    chart: str
 
 class TransactionListResponse(BaseModel):
     success: bool = True
@@ -183,7 +185,7 @@ class UserListResponse(BaseModel):
     success: bool = True
     users: List[User]
 
-# Helper functions
+# Helper functions (no changes needed here)
 def get_password_hash(password):
     return pwd_context.hash(password)
 
@@ -248,13 +250,12 @@ class ExpenseTracker:
         try:
             result = await self.accounts_collection.insert_one(account_doc)
             account_id = str(result.inserted_id)
-            # If there's an initial balance, create an opening balance transaction
             if initial_balance != 0:
                 trans_type = "credit" if initial_balance > 0 else "debit"
                 await self.add_transaction(
-                    date=datetime.utcnow().strftime('%d-%m-%Y'),
+                    date=date.today(), # Use today's date for opening balance
                     description="Opening Balance",
-                    place="Opening Balance",  # changed from name to place
+                    place="Opening Balance",
                     amount=abs(initial_balance),
                     transaction_type=trans_type,
                     category="Initial Balance",
@@ -262,18 +263,23 @@ class ExpenseTracker:
                 )
             return account_id
         except Exception as e:
-            # Handle potential duplicate key error if account name already exists for user
             if "duplicate key" in str(e):
                 raise ValueError(f"Account with name '{name}' already exists.")
             raise
 
-    async def add_transaction(self, date, description, place, amount, transaction_type, 
+    # --- CHANGE 2: The `date` parameter is now a `date` object.
+    async def add_transaction(self, date: date, description, place, amount, transaction_type, 
                        category, account_name, to_account="None", paid_by="Self", status="Pending"):
+        
+        # --- FIX: Convert the `date` object to a `datetime` object for MongoDB.
+        # This stores it as a BSON Date, which can be queried properly.
+        transaction_date = datetime.combine(date, datetime.min.time())
+
         transaction = {
             'user_id': self.user_id,
-            'date': date,
+            'date': transaction_date,  # Use the datetime object here
             'description': description,
-            'place': place,  # changed from 'name' to 'place'
+            'place': place,
             'amount': amount,
             'type': transaction_type,
             'category': category,
@@ -319,34 +325,31 @@ class ExpenseTracker:
     
     async def get_transactions(self, limit=None):
         cursor = self.transactions_collection.find({"user_id": self.user_id})
-        
-        # Sort by date descending
         cursor = cursor.sort("created_at", -1)
-        
-        # Apply limit if provided
         if limit:
             cursor = cursor.limit(limit)
-        
         transactions = []
         async for doc in cursor:
-            # Convert ObjectId to string
             doc["id"] = str(doc["_id"])
+            # Format date back to "YYYY-MM-DD" for response consistency
+            if isinstance(doc["date"], datetime):
+                doc["date"] = doc["date"].strftime("%Y-%m-%d")
             del doc["_id"]
             transactions.append(doc)
-        
         return transactions
     
     async def get_transactions_by_filter(self, filters: TransactionFilterPayload):
         query_filter = {"user_id": self.user_id}
-        
-        # Build query based on the filter payload
+
+        print(f"Filters received: {filters}")
+
         if filters.searchTerm:
             query_filter["$or"] = [
                 {"description": {"$regex": filters.searchTerm, "$options": "i"}},
                 {"place": {"$regex": filters.searchTerm, "$options": "i"}},
                 {"category": {"$regex": filters.searchTerm, "$options": "i"}},
             ]
-            
+
         date_filter = {}
         if filters.dateFrom:
             date_filter["$gte"] = datetime.combine(filters.dateFrom, datetime.min.time())
@@ -356,11 +359,12 @@ class ExpenseTracker:
             query_filter["date"] = date_filter
 
         if filters.type:
-            query_filter["type"] = filters.type
-            
+            if isinstance(filters.type, list):
+                query_filter["type"] = {"$in": filters.type}
+            else:
+                query_filter["type"] = filters.type
         if filters.categories:
             query_filter["category"] = {"$in": filters.categories}
-
         if filters.accounts:
             query_filter["account"] = {"$in": filters.accounts}
 
@@ -371,27 +375,24 @@ class ExpenseTracker:
             amount_filter["$lte"] = filters.maxAmount
         if amount_filter:
             query_filter["amount"] = amount_filter
-            
+
         skip = (filters.page - 1) * filters.limit
         cursor = self.transactions_collection.find(query_filter).sort("date", -1).skip(skip).limit(filters.limit)
-        
+
         transactions = []
         async for doc in cursor:
-            doc["id"] = str(doc["_id"])    
-            del doc["_id"]  
+            doc["id"] = str(doc["_id"])
+            if isinstance(doc["date"], datetime):
+                doc["date"] = doc["date"].strftime("%Y-%m-%d")
+            del doc["_id"]
             transactions.append(doc)
-        
+
         return transactions
     
     async def get_all_account_balances(self):
-        # Get all accounts for the user
         accounts_cursor = self.accounts_collection.find({"user_id": self.user_id})
         accounts = await accounts_cursor.to_list(length=None)
-        
-        # Initialize balances for all existing accounts
         balances = {account['name']: 0.0 for account in accounts}
-
-        # Get all transactions for the user
         transactions = await self.get_transactions()
         
         for transaction in transactions:
@@ -400,52 +401,45 @@ class ExpenseTracker:
             transaction_type = transaction['type'].lower()
             to_account = transaction['to_account']
             
-            # Update balances based on transaction type
             if transaction_type == "credit":
                 balances[account] += amount
             elif transaction_type == "debit":
                 balances[account] -= amount
             elif transaction_type == "debt_incurred":
-                # This is when a friend pays for you. You owe them.
                 balances[account] -= amount
-            elif transaction_type == "transferred":
-                balances[account] -= amount # The account that money is leaving from
+            elif transaction_type in ["transferred", "self_transferred"]:
+                balances[account] -= amount
                 if to_account != "None":
                     balances[to_account] += amount
-        
         return balances
     
-    async def get_spending_by_category(self, start_date=None, end_date=None):
-        # Get all transactions
+    # --- CHANGE 3: The date parameters are now `date` objects.
+    async def get_spending_by_category(self, start_date: Optional[date] = None, end_date: Optional[date] = None):
         transactions = await self.get_transactions()
-        
         if not transactions:
             return {}
         
-        # Convert to pandas DataFrame for easier filtering and grouping
         df = pd.DataFrame(transactions)
         
-        # Filter by date if provided
-        if start_date and end_date:
-            df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
-            start = pd.to_datetime(start_date, format='%d-%m-%Y')
-            end = pd.to_datetime(end_date, format='%d-%m-%Y')
-            df = df[(df['date'] >= start) & (df['date'] <= end)]
+        # --- FIX: The `date` column from the DB is now datetime, so convert it with pd.to_datetime
+        df['date'] = pd.to_datetime(df['date'])
         
-        # Filter only debit transactions (expenses)
+        if start_date and end_date:
+            # Convert input `date` objects to `datetime` for comparison
+            start_dt = pd.to_datetime(start_date)
+            end_dt = pd.to_datetime(end_date)
+            df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
+        
         if not df.empty:
             debit_df = df[df['type'].str.lower() == 'debit']
-            
             if not debit_df.empty:
-                # Group by category and sum amounts
                 category_spending = debit_df.groupby('category')['amount'].sum().to_dict()
                 return category_spending
-        
         return {}
     
-    async def plot_spending_by_category(self, start_date=None, end_date=None):
+    # --- CHANGE 4: The date parameters are now `date` objects.
+    async def plot_spending_by_category(self, start_date: Optional[date] = None, end_date: Optional[date] = None):
         category_spending = await self.get_spending_by_category(start_date, end_date)
-        
         if not category_spending:
             return None
         
@@ -457,37 +451,28 @@ class ExpenseTracker:
         plt.xticks(rotation=45)
         plt.tight_layout()
         
-        # Save plot to a bytes buffer
         buffer = BytesIO()
         plt.savefig(buffer, format='png')
         buffer.seek(0)
         plt.close()
         
-        # Convert to base64 for easy transmission
         img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
         return img_str
     
     async def plot_monthly_spending(self):
         transactions = await self.get_transactions()
-        
         if not transactions:
             return None
         
-        # Convert to pandas DataFrame
         df = pd.DataFrame(transactions)
         
-        # Convert date strings to datetime objects
-        df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
+        # --- FIX: This works correctly now because `get_transactions` returns datetime strings
+        df['date'] = pd.to_datetime(df['date'])
         
-        # Filter only debit transactions
         if not df.empty:
             debit_df = df[df['type'].str.lower() == 'debit']
-            
             if not debit_df.empty:
-                # Extract month and year
                 debit_df['Month'] = debit_df['date'].dt.strftime('%Y-%m')
-                
-                # Group by month and sum
                 monthly_spending = debit_df.groupby('Month')['amount'].sum()
                 
                 plt.figure(figsize=(12, 6))
@@ -498,16 +483,13 @@ class ExpenseTracker:
                 plt.xticks(rotation=45)
                 plt.tight_layout()
                 
-                # Save plot to a bytes buffer
                 buffer = BytesIO()
                 plt.savefig(buffer, format='png')
                 buffer.seek(0)
                 plt.close()
                 
-                # Convert to base64 for easy transmission
                 img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
                 return img_str
-        
         return None
 
 # Get tracker instance for specific user
@@ -515,31 +497,21 @@ async def get_tracker(user):
     user_id = str(user["_id"])
     return ExpenseTracker(app, user_id)
 
-# Authentication endpoints
+# --- All API Endpoints below are updated to use the new date formats ---
+
+# Authentication endpoints (no changes)
 @app.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     user = await authenticate_user(app, form_data.username, form_data.password)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
+        raise HTTPException(status_code=401, detail="Incorrect email or password", headers={"WWW-Authenticate": "Bearer"})
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user["email"]}, expires_delta=access_token_expires
-    )
-    
+    access_token = create_access_token(data={"sub": user["email"]}, expires_delta=access_token_expires)
     return {"access_token": access_token, "token_type": "bearer"}
 
-# Account management endpoints
+# Account management endpoints (no changes)
 @app.post("/api/accounts", response_model=SuccessResponse, status_code=status.HTTP_201_CREATED)
-async def create_account(
-    account: AccountCreate,
-    current_user: dict = Depends(get_current_user)
-):
-    """Create a new account for the authenticated user."""
+async def create_account(account: AccountCreate, current_user: dict = Depends(get_current_user)):
     try:
         tracker = await get_tracker(current_user)
         account_id = await tracker.create_account(account.name, account.type, account.initial_balance)
@@ -551,90 +523,47 @@ async def create_account(
 
 @app.get("/api/accounts", response_model=AccountListResponse)
 async def list_accounts(current_user: dict = Depends(get_current_user)):
-    """List all accounts and their balances for the authenticated user."""
     try:
         tracker = await get_tracker(current_user)
         balances = await tracker.get_all_account_balances()
-        
         accounts_cursor = tracker.accounts_collection.find({"user_id": tracker.user_id})
         accounts_list = []
         async for acc in accounts_cursor:
-            accounts_list.append(AccountResponse(
-                id=str(acc["_id"]),
-                name=acc["name"],
-                type=acc["type"],
-                balance=balances.get(acc["name"], 0.0)
-            ))
+            accounts_list.append(AccountResponse(id=str(acc["_id"]), name=acc["name"], type=acc["type"], balance=balances.get(acc["name"], 0.0)))
         return {"success": True, "accounts": accounts_list}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/accounts/{account_id}", response_model=SuccessResponse)
 async def delete_account(account_id: str, current_user: dict = Depends(get_current_user)):
-    # Note: In a real app, you might want to prevent deleting accounts with non-zero balances or transactions.
     raise HTTPException(status_code=501, detail="Account deletion not yet implemented.")
 
-# User management endpoints
+# User management endpoints (no changes)
 @app.post("/api/users", response_model=User, status_code=status.HTTP_201_CREATED)
 async def create_user(user: UserCreate):
-    # Check if user already exists
     existing_user = await get_user_by_email(app, user.email)
     if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-    
-    # Create new user
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
     hashed_password = get_password_hash(user.password)
-    user_data = UserInDB(
-        email=user.email,
-        username=user.username,
-        full_name=user.full_name,
-        hashed_password=hashed_password
-    )
-    
+    user_data = UserInDB(email=user.email, username=user.username, full_name=user.full_name, hashed_password=hashed_password)
     new_user = await app.mongodb["users"].insert_one(user_data.dict())
-    
     created_user = await app.mongodb["users"].find_one({"_id": new_user.inserted_id})
-    
-    return {
-        "id": str(created_user["_id"]),
-        "email": created_user["email"],
-        "username": created_user["username"],
-        "full_name": created_user.get("full_name")
-    }
+    return {"id": str(created_user["_id"]), "email": created_user["email"], "username": created_user["username"], "full_name": created_user.get("full_name")}
 
 @app.get("/api/users/me", response_model=User)
 async def read_users_me(current_user = Depends(get_current_user)):
-    return {
-        "id": str(current_user["_id"]),
-        "email": current_user["email"],
-        "username": current_user["username"],
-        "full_name": current_user.get("full_name")
-    }
+    return {"id": str(current_user["_id"]), "email": current_user["email"], "username": current_user["username"], "full_name": current_user.get("full_name")}
 
 @app.get("/api/users", response_model=UserListResponse)
 async def get_users(current_user: dict = Depends(get_current_user)):
-    # In a real app, you'd want to check if current_user has admin privileges
     users = []
     async for user in app.mongodb["users"].find():
-        users.append(User(
-            id=str(user["_id"]),
-            email=user["email"],
-            username=user["username"],
-            full_name=user.get("full_name")
-        ))
-    
+        users.append(User(id=str(user["_id"]), email=user["email"], username=user["username"], full_name=user.get("full_name")))
     return {"success": True, "users": users}
 
-# Transaction endpoints
+# Transaction endpoints (no changes)
 @app.get("/api/transactions", response_model=TransactionListResponse)
-async def get_transactions(
-    limit: int = Query(10, description="Number of transactions to return"),
-    current_user: dict = Depends(get_current_user)
-):
-    """Get recent transactions for the authenticated user."""
+async def get_transactions(limit: int = Query(10, description="Number of transactions to return"), current_user: dict = Depends(get_current_user)):
     try:
         tracker = await get_tracker(current_user)
         transactions = await tracker.get_transactions(limit)
@@ -642,14 +571,9 @@ async def get_transactions(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
-
 @app.post("/api/transactions/filter", response_model=TransactionListResponse)
-async def filter_transactions(
-    payload: TransactionFilterPayload,
-    current_user: dict = Depends(get_current_user)
-):
-    print(payload)
-    """Fetch transactions for the authenticated user with advanced filtering and pagination."""
+async def filter_transactions(payload: TransactionFilterPayload, current_user: dict = Depends(get_current_user)):
+    print(f"Filtering transactions with payload: {payload}")
     try:
         tracker = await get_tracker(current_user)
         transactions = await tracker.get_transactions_by_filter(payload)
@@ -657,26 +581,15 @@ async def filter_transactions(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
 
-
 @app.post("/api/transactions", response_model=SuccessResponse)
-async def add_transaction(
-    transaction: TransactionCreate,
-    current_user: dict = Depends(get_current_user)
-):
-    """Add a new transaction for the authenticated user."""
+async def add_transaction(transaction: TransactionCreate, current_user: dict = Depends(get_current_user)):
     try:
         tracker = await get_tracker(current_user)
+        # The `transaction.date` is now a `date` object and is passed directly
         transaction_id = await tracker.add_transaction(
-            transaction.date,
-            transaction.description,
-            transaction.place,  # changed from transaction.name to transaction.place
-            transaction.amount,
-            transaction.type,
-            transaction.category,
-            transaction.account,
-            transaction.to_account,
-            transaction.paid_by,
-            transaction.status
+            transaction.date, transaction.description, transaction.place, transaction.amount,
+            transaction.type, transaction.category, transaction.account, transaction.to_account,
+            transaction.paid_by, transaction.status
         )
         return {"success": True, "message": f"Transaction added with ID {transaction_id}"}
     except ValueError as e:
@@ -685,11 +598,7 @@ async def add_transaction(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/transactions/{transaction_id}", response_model=SuccessResponse)
-async def delete_transaction(
-    transaction_id: str,
-    current_user: dict = Depends(get_current_user)
-):
-    """Delete a transaction for the authenticated user."""
+async def delete_transaction(transaction_id: str, current_user: dict = Depends(get_current_user)):
     try:
         tracker = await get_tracker(current_user)
         if await tracker.delete_transaction(transaction_id):
@@ -697,17 +606,11 @@ async def delete_transaction(
         else:
             raise HTTPException(status_code=404, detail="Transaction not found")
     except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
+        if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/transactions/{transaction_id}/status", response_model=SuccessResponse)
-async def update_status(
-    transaction_id: str,
-    update_data: TransactionUpdate,
-    current_user: dict = Depends(get_current_user)
-):
-    """Update transaction status for the authenticated user."""
+async def update_status(transaction_id: str, update_data: TransactionUpdate, current_user: dict = Depends(get_current_user)):
     try:
         tracker = await get_tracker(current_user)
         if await tracker.update_transaction_status(transaction_id, update_data.status):
@@ -715,13 +618,11 @@ async def update_status(
         else:
             raise HTTPException(status_code=404, detail="Transaction not found")
     except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
+        if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/balances", response_model=BalanceResponse)
 async def get_balances(current_user: dict = Depends(get_current_user)):
-    """Get account balances for the authenticated user."""
     try:
         tracker = await get_tracker(current_user)
         balances = await tracker.get_all_account_balances()
@@ -729,13 +630,13 @@ async def get_balances(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- CHANGE 5: Updated endpoint signature to use `date` type.
 @app.get("/api/spending/category", response_model=SpendingCategoryResponse)
 async def get_spending_by_category(
-    start_date: Optional[str] = Query(None, description="Start date in DD-MM-YYYY format"),
-    end_date: Optional[str] = Query(None, description="End date in DD-MM-YYYY format"),
+    start_date: Optional[date] = Query(None, description="Start date in YYYY-MM-DD format"),
+    end_date: Optional[date] = Query(None, description="End date in YYYY-MM-DD format"),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get spending by category for the authenticated user."""
     try:
         tracker = await get_tracker(current_user)
         spending = await tracker.get_spending_by_category(start_date, end_date)
@@ -743,13 +644,13 @@ async def get_spending_by_category(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- CHANGE 6: Updated endpoint signature to use `date` type.
 @app.get("/api/charts/category", response_model=ChartResponseModel)
 async def get_category_chart(
-    start_date: Optional[str] = Query(None, description="Start date in DD-MM-YYYY format"),
-    end_date: Optional[str] = Query(None, description="End date in DD-MM-YYYY format"),
+    start_date: Optional[date] = Query(None, description="Start date in YYYY-MM-DD format"),
+    end_date: Optional[date] = Query(None, description="End date in YYYY-MM-DD format"),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get category spending chart for the authenticated user."""
     try:
         tracker = await get_tracker(current_user)
         img_str = await tracker.plot_spending_by_category(start_date, end_date)
@@ -758,13 +659,11 @@ async def get_category_chart(
         else:
             raise HTTPException(status_code=404, detail="No data available for chart")
     except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
+        if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/charts/monthly", response_model=ChartResponseModel)
 async def get_monthly_chart(current_user: dict = Depends(get_current_user)):
-    """Get monthly spending chart for the authenticated user."""
     try:
         tracker = await get_tracker(current_user)
         img_str = await tracker.plot_monthly_spending()
@@ -773,8 +672,7 @@ async def get_monthly_chart(current_user: dict = Depends(get_current_user)):
         else:
             raise HTTPException(status_code=404, detail="No data available for chart")
     except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
+        if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
