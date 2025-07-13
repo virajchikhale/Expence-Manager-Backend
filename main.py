@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Dict, Optional, Union
 from passlib.context import CryptContext
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import jwt
 from jwt.exceptions import PyJWTError
 import matplotlib.pyplot as plt
@@ -135,6 +135,18 @@ class TransactionUpdate(BaseModel):
 
 class TransactionResponse(TransactionBase):
     id: str
+
+class TransactionFilterPayload(BaseModel):
+    page: int = 1
+    limit: int = 20
+    searchTerm: Optional[str] = None
+    dateFrom: Optional[date] = None
+    dateTo: Optional[date] = None
+    type: Optional[str] = None
+    categories: Optional[List[str]] = None
+    accounts: Optional[List[str]] = None
+    minAmount: Optional[float] = None
+    maxAmount: Optional[float] = None
 
 class SpendingResponse(BaseModel):
     category: str
@@ -320,6 +332,53 @@ class ExpenseTracker:
             # Convert ObjectId to string
             doc["id"] = str(doc["_id"])
             del doc["_id"]
+            transactions.append(doc)
+        
+        return transactions
+    
+    async def get_transactions_by_filter(self, filters: TransactionFilterPayload):
+        query_filter = {"user_id": self.user_id}
+        
+        # Build query based on the filter payload
+        if filters.searchTerm:
+            query_filter["$or"] = [
+                {"description": {"$regex": filters.searchTerm, "$options": "i"}},
+                {"place": {"$regex": filters.searchTerm, "$options": "i"}},
+                {"category": {"$regex": filters.searchTerm, "$options": "i"}},
+            ]
+            
+        date_filter = {}
+        if filters.dateFrom:
+            date_filter["$gte"] = datetime.combine(filters.dateFrom, datetime.min.time())
+        if filters.dateTo:
+            date_filter["$lte"] = datetime.combine(filters.dateTo, datetime.max.time())
+        if date_filter:
+            query_filter["date"] = date_filter
+
+        if filters.type:
+            query_filter["type"] = filters.type
+            
+        if filters.categories:
+            query_filter["category"] = {"$in": filters.categories}
+
+        if filters.accounts:
+            query_filter["account"] = {"$in": filters.accounts}
+
+        amount_filter = {}
+        if filters.minAmount is not None:
+            amount_filter["$gte"] = filters.minAmount
+        if filters.maxAmount is not None:
+            amount_filter["$lte"] = filters.maxAmount
+        if amount_filter:
+            query_filter["amount"] = amount_filter
+            
+        skip = (filters.page - 1) * filters.limit
+        cursor = self.transactions_collection.find(query_filter).sort("date", -1).skip(skip).limit(filters.limit)
+        
+        transactions = []
+        async for doc in cursor:
+            doc["id"] = str(doc["_id"])    
+            del doc["_id"]  
             transactions.append(doc)
         
         return transactions
@@ -582,6 +641,22 @@ async def get_transactions(
         return {"success": True, "transactions": transactions}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+@app.post("/api/transactions/filter", response_model=TransactionListResponse)
+async def filter_transactions(
+    payload: TransactionFilterPayload,
+    current_user: dict = Depends(get_current_user)
+):
+    print(payload)
+    """Fetch transactions for the authenticated user with advanced filtering and pagination."""
+    try:
+        tracker = await get_tracker(current_user)
+        transactions = await tracker.get_transactions_by_filter(payload)
+        return {"success": True, "transactions": transactions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
+
 
 @app.post("/api/transactions", response_model=SuccessResponse)
 async def add_transaction(

@@ -2,4 +2,5 @@
 
 # dependencies
 /expence
-
+/venv
+.env
