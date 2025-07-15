@@ -270,10 +270,54 @@ class ExpenseTracker:
     # --- CHANGE 2: The `date` parameter is now a `date` object.
     async def add_transaction(self, date: date, description, place, amount, transaction_type, 
                        category, account_name, to_account="None", paid_by="Self", status="Pending"):
-        
-        # --- FIX: Convert the `date` object to a `datetime` object for MongoDB.
-        # This stores it as a BSON Date, which can be queried properly.
+        # Convert the `date` object to a `datetime` object for MongoDB.
         transaction_date = datetime.combine(date, datetime.min.time())
+
+        # Validate that accounts exist
+        from_account_exists = await self.accounts_collection.find_one({"user_id": self.user_id, "name": account_name})
+        if not from_account_exists:
+            raise ValueError(f"Account '{account_name}' does not exist.")
+
+        if to_account != "None":
+            to_account_exists = await self.accounts_collection.find_one({"user_id": self.user_id, "name": to_account})
+            if not to_account_exists:
+                raise ValueError(f"Account '{to_account}' does not exist.")
+
+        # Calculate the balance for the account up to this transaction (including this one)
+        # 1. Get all previous transactions for this account, sorted by date ascending
+        prev_transactions_cursor = self.transactions_collection.find({
+            "user_id": self.user_id,
+            "account": account_name
+        }).sort("date", 1)
+        prev_balance = 0.0
+        async for t in prev_transactions_cursor:
+            t_type = t.get("type", "").lower()
+            t_amount = float(t.get("amount", 0))
+            t_to_account = t.get("to_account", "None")
+            if t_type == "credit":
+                prev_balance += t_amount
+            elif t_type == "debit":
+                prev_balance -= t_amount
+            elif t_type == "debt_incurred":
+                prev_balance -= t_amount
+            elif t_type in ["transferred", "self_transferred"]:
+                prev_balance -= t_amount
+                if t_to_account == account_name:
+                    prev_balance += t_amount
+
+        # Now apply this transaction
+        transaction_balance = prev_balance
+        t_type = transaction_type.lower()
+        if t_type == "credit":
+            transaction_balance += amount
+        elif t_type == "debit":
+            transaction_balance -= amount
+        elif t_type == "debt_incurred":
+            transaction_balance -= amount
+        elif t_type in ["transferred", "self_transferred"]:
+            transaction_balance -= amount
+            if to_account == account_name:
+                transaction_balance += amount
 
         transaction = {
             'user_id': self.user_id,
@@ -287,17 +331,10 @@ class ExpenseTracker:
             'to_account': to_account,
             'paid_by': paid_by,
             'status': status,
-            'created_at': datetime.utcnow()
+            'created_at': datetime.utcnow(),
+            'transaction_balance': transaction_balance
         }
-        # Validate that accounts exist
-        from_account_exists = await self.accounts_collection.find_one({"user_id": self.user_id, "name": account_name})
-        if not from_account_exists:
-            raise ValueError(f"Account '{account_name}' does not exist.")
 
-        if to_account != "None":
-            to_account_exists = await self.accounts_collection.find_one({"user_id": self.user_id, "name": to_account})
-            if not to_account_exists:
-                raise ValueError(f"Account '{to_account}' does not exist.")
         result = await self.transactions_collection.insert_one(transaction)
         return str(result.inserted_id)
     
