@@ -414,7 +414,7 @@ class ExpenseTracker:
             query_filter["amount"] = amount_filter
 
         skip = (filters.page - 1) * filters.limit
-        cursor = self.transactions_collection.find(query_filter).sort("date", -1).skip(skip).limit(filters.limit)
+        cursor = self.transactions_collection.find(query_filter).sort("created_at", -1).skip(skip).limit(filters.limit)
 
         transactions = []
         async for doc in cursor:
