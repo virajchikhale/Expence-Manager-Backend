@@ -267,7 +267,6 @@ class ExpenseTracker:
                 raise ValueError(f"Account with name '{name}' already exists.")
             raise
 
-    # --- CHANGE 2: The `date` parameter is now a `date` object.
     async def add_transaction(self, date: date, description, place, amount, transaction_type, 
                        category, account_name, to_account="None", paid_by="Self", status="Pending"):
         # Convert the `date` object to a `datetime` object for MongoDB.
@@ -283,45 +282,50 @@ class ExpenseTracker:
             if not to_account_exists:
                 raise ValueError(f"Account '{to_account}' does not exist.")
 
-        # Calculate the balance for the account up to this transaction (including this one)
-        # 1. Get all previous transactions for this account, sorted by date ascending
-        prev_transactions_cursor = self.transactions_collection.find({
+        prev_balance = 0.0
+
+        # 1. Fetch outgoing transactions (account_name is the sender)
+        outgoing_cursor = self.transactions_collection.find({
             "user_id": self.user_id,
             "account": account_name
         }).sort("date", 1)
-        prev_balance = 0.0
-        async for t in prev_transactions_cursor:
+
+        async for t in outgoing_cursor:
             t_type = t.get("type", "").lower()
             t_amount = float(t.get("amount", 0))
-            t_to_account = t.get("to_account", "None")
             if t_type == "credit":
                 prev_balance += t_amount
-            elif t_type == "debit":
+            elif t_type in ["debit", "debt_incurred", "transferred", "self_transferred"]:
                 prev_balance -= t_amount
-            elif t_type == "debt_incurred":
-                prev_balance -= t_amount
-            elif t_type in ["transferred", "self_transferred"]:
-                prev_balance -= t_amount
-                if t_to_account == account_name:
-                    prev_balance += t_amount
 
-        # Now apply this transaction
+        # 2. Fetch incoming transfer transactions (account_name is the receiver)
+        incoming_cursor = self.transactions_collection.find({
+            "user_id": self.user_id,
+            "to_account": account_name,
+            "type": {"$in": ["transferred", "self_transferred"]}
+        }).sort("date", 1)
+
+        async for t in incoming_cursor:
+            t_amount = float(t.get("amount", 0))
+            prev_balance += t_amount
+
+        # Apply this transaction
         transaction_balance = prev_balance
         t_type = transaction_type.lower()
+
         if t_type == "credit":
             transaction_balance += amount
-        elif t_type == "debit":
-            transaction_balance -= amount
-        elif t_type == "debt_incurred":
+        elif t_type in ["debit", "debt_incurred"]:
             transaction_balance -= amount
         elif t_type in ["transferred", "self_transferred"]:
-            transaction_balance -= amount
-            if to_account == account_name:
-                transaction_balance += amount
+            if account_name == to_account:
+                transaction_balance += amount  # Incoming
+            else:
+                transaction_balance -= amount  # Outgoing
 
         transaction = {
             'user_id': self.user_id,
-            'date': transaction_date,  # Use the datetime object here
+            'date': transaction_date,
             'description': description,
             'place': place,
             'amount': amount,
@@ -337,6 +341,7 @@ class ExpenseTracker:
 
         result = await self.transactions_collection.insert_one(transaction)
         return str(result.inserted_id)
+
     
     async def delete_transaction(self, transaction_id):
         try:
